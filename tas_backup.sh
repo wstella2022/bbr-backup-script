@@ -36,7 +36,7 @@ required_var BACKUP_DIR
 required_var BOSH_TARGET
 required_var BOSH_USER
 required_var BOSH_CLIENT_SECRET
-required_var PRIVATE_KEY_PATH
+required_var CA_CERT
 
 required_var OM_TARGET
 required_var OM_USERNAME
@@ -135,15 +135,15 @@ detect_tiles() {
     # trap already set for EXIT will clean them
 
     # Capture bosh deployments output (suppress stderr to keep tmp file clean)
-    if ! bosh -e "${BOSH_TARGET}" deployments > "${DEPLOYMENTS_TMP}" 2>/dev/null; then
+    if ! bosh -e "${BOSH_TARGET}" deployments --column=name > "${DEPLOYMENTS_TMP}" 2>/dev/null; then
         fatal "Failed to run 'bosh deployments' against ${BOSH_TARGET}"
     fi
 
-    # whitelist families and exclude pas-exporter
-    awk 'NR>1 {print $1}' "${DEPLOYMENTS_TMP}" \
-      | grep -E '^(cf-|redis-enterprise-|p_spring-cloud-services-|p-healthwatch2-)' \
-      | grep -v '^p-healthwatch2-pas-exporter-' \
-      | sort -u > "${TAS_TILES_TMP}" || true
+    sed -i 's/\r$//' "${DEPLOYMENTS_TMP}"
+
+    grep -E '^(cf-[A-Za-z0-9]+|redis-enterprise-[A-Za-z0-9]+|p_spring-cloud-services-[A-Za-z0-9]+|p-healthwatch2-[A-Za-z0-9]+)' "${DEPLOYMENTS_TMP}" \
+    | sort -u > "${TAS_TILES_TMP}"
+
 
     # Build space-separated list
     TAS_TILES=""
@@ -208,7 +208,7 @@ pre_check() {
         PRECHECK_LOG="${TILE_LOG_DIR}/precheck.log"
 
         log "Running BBR pre-backup-check for ${tile}..."
-        if bbr deployment --debug --target "${BOSH_TARGET}" --username "${BOSH_USER}" --ca-cert "${PRIVATE_KEY_PATH}" --deployment "${tile}" pre-backup-check > "${PRECHECK_LOG}" 2>&1; then
+        if bbr deployment --debug --target "${BOSH_TARGET}" --username "${BOSH_USER}" --ca-cert "${CA_CERT}" --deployment "${tile}" pre-backup-check > "${PRECHECK_LOG}" 2>&1; then
             log "BBR pre-backup-check OK for ${tile}"
             echo "${tile}: pre-backup-check: OK" >> "${SUMMARY_FILE}"
         else
@@ -254,7 +254,7 @@ run_bbr_backup_tile() {
 
     if bbr deployment --debug --target "${BOSH_TARGET}" \
          --username "${BOSH_USER}" \
-         --ca-cert "${PRIVATE_KEY_PATH}" \
+         --ca-cert "${CA_CERT}" \
          --deployment "${tile}" \
          backup --artifact-path "${TILE_DIR}" > "${LOGFILE}" 2>&1; then
         log "BBR backup succeeded for ${tile}"
@@ -387,20 +387,20 @@ if ! bosh_director_precheck; then
 fi
 
 pre_check
-prompt_continue
+# prompt_continue
 
-if ! bosh_director_backup; then
-    log "BOSH director backup failed (or skipped). Continuing with tile backups."
-fi
+# if ! bosh_director_backup; then
+#     log "BOSH director backup failed (or skipped). Continuing with tile backups."
+# fi
 
 
-if ! run_bbr_backup_parallel; then
-    log "One or more BBR backups failed. Proceeding to export OM config (but consider investigating failures)."
-fi
+# if ! run_bbr_backup_parallel; then
+#     log "One or more BBR backups failed. Proceeding to export OM config (but consider investigating failures)."
+# fi
 
-if ! export_om_config; then
-    log "OM export encountered errors. See ${SUMMARY_DIR}/om/*.log"
-fi
+# if ! export_om_config; then
+#     log "OM export encountered errors. See ${SUMMARY_DIR}/om/*.log"
+# fi
 
 completion
 # explicit cleanup will be handled by trap
