@@ -309,7 +309,7 @@ bosh_director_precheck() {
     DIR_LOG="${SUMMARY_DIR}/bbr/bosh-director/precheck.log"
     mkdir -p "$(dirname "${DIR_LOG}")"
 
-    bbr director \
+    bbr director --debug \
         --host "${BOSH_BBR_HOST}" \
         --username "${BOSH_BBR_USERNAME}" \
         --private-key-path "${BOSH_BBR_PRIVATE_KEY}" \
@@ -333,7 +333,7 @@ bosh_director_backup() {
     DIR_DIR="${SUMMARY_DIR}/bbr/bosh-director"
     mkdir -p "${DIR_DIR}"
 
-    CMD="bbr director \
+    CMD="bbr director --debug\
         --host ${BOSH_BBR_HOST} \
         --username ${BOSH_BBR_USERNAME} \
         --private-key-path ${BOSH_BBR_PRIVATE_KEY} \
