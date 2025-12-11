@@ -35,7 +35,9 @@ required_var() {
 required_var BACKUP_DIR
 required_var BOSH_TARGET
 required_var BOSH_USER
+required_var BOSH_CLIENT_SECRET
 required_var PRIVATE_KEY_PATH
+
 required_var OM_TARGET
 required_var OM_USERNAME
 required_var OM_PASSWORD
@@ -137,8 +139,11 @@ detect_tiles() {
         fatal "Failed to run 'bosh deployments' against ${BOSH_TARGET}"
     fi
 
-    # Extract first column (skip header) and match p- or cf
-    awk 'NR>1 {print $1}' "${DEPLOYMENTS_TMP}" | grep -E '^(p-|cf)' | sort -u > "${TAS_TILES_TMP}" || true
+    # whitelist families and exclude pas-exporter
+    awk 'NR>1 {print $1}' "${DEPLOYMENTS_TMP}" \
+      | grep -E '^(cf-|redis-enterprise-|p_spring-cloud-services-|p-healthwatch2-)' \
+      | grep -v '^p-healthwatch2-pas-exporter-' \
+      | sort -u > "${TAS_TILES_TMP}" || true
 
     # Build space-separated list
     TAS_TILES=""
@@ -161,7 +166,7 @@ detect_tiles() {
         fatal "No tiles detected, aborting"
     fi
 
-    log "Detected tiles: ${TAS_TILES}"
+    log "Detected (whitelisted) tiles: ${TAS_TILES}"
     # Do not write to SUMMARY_FILE here — pre_check will initialize it and we record detected tiles there.
 }
 
@@ -203,7 +208,7 @@ pre_check() {
         PRECHECK_LOG="${TILE_LOG_DIR}/precheck.log"
 
         log "Running BBR pre-backup-check for ${tile}..."
-        if bbr deployment --target "${BOSH_TARGET}" --username "${BOSH_USER}" --private-key-path "${PRIVATE_KEY_PATH}" --deployment "${tile}" pre-backup-check > "${PRECHECK_LOG}" 2>&1; then
+        if bbr deployment --debug --target "${BOSH_TARGET}" --username "${BOSH_USER}" --ca-cert "${PRIVATE_KEY_PATH}" --deployment "${tile}" pre-backup-check > "${PRECHECK_LOG}" 2>&1; then
             log "BBR pre-backup-check OK for ${tile}"
             echo "${tile}: pre-backup-check: OK" >> "${SUMMARY_FILE}"
         else
@@ -247,9 +252,9 @@ run_bbr_backup_tile() {
 
     log "Starting BBR backup for ${tile} (logs: ${LOGFILE})"
 
-    if bbr deployment --target "${BOSH_TARGET}" \
+    if bbr deployment --debug --target "${BOSH_TARGET}" \
          --username "${BOSH_USER}" \
-         --private-key-path "${PRIVATE_KEY_PATH}" \
+         --ca-cert "${PRIVATE_KEY_PATH}" \
          --deployment "${tile}" \
          backup --artifact-path "${TILE_DIR}" > "${LOGFILE}" 2>&1; then
         log "BBR backup succeeded for ${tile}"
@@ -295,22 +300,65 @@ run_bbr_backup_parallel() {
     return 0
 }
 
+# ------------------------
+# Director precheck & backup (UAA client auth)
+# ------------------------
+bosh_director_precheck() {
+    log "Running BOSH Director BBR pre-backup-check..."
+
+    DIR_LOG="${SUMMARY_DIR}/bbr/bosh-director/precheck.log"
+    mkdir -p "$(dirname "${DIR_LOG}")"
+
+    bbr director \
+        --host "${BOSH_BBR_HOST}" \
+        --username "${BOSH_BBR_USERNAME}" \
+        --private-key-path "${BOSH_BBR_PRIVATE_KEY}" \
+        pre-backup-check > "${DIR_LOG}" 2>&1
+
+    if [ $? -eq 0 ]; then
+        log "BOSH Director pre-backup-check PASSED"
+        echo "BOSH Director: OK" >> "${SUMMARY_FILE}"
+    else
+        log "BOSH Director pre-backup-check FAILED"
+        echo "BOSH Director: FAILED (See ${DIR_LOG})" >> "${SUMMARY_FILE}"
+    fi
+}
+
+########################################
+# BOSH Director Backup
+########################################
+bosh_director_backup() {
+    log "Starting BBR backup for BOSH Director..."
+
+    DIR_DIR="${SUMMARY_DIR}/bbr/bosh-director"
+    mkdir -p "${DIR_DIR}"
+
+    CMD="bbr director \
+        --host ${BOSH_BBR_HOST} \
+        --username ${BOSH_BBR_USERNAME} \
+        --private-key-path ${BOSH_BBR_PRIVATE_KEY} \
+        backup \
+        --artifact-path ${DIR_DIR}"
+
+    if [ "${DEBUG}" = "true" ]; then
+        CMD="${CMD} --debug"
+    fi
+
+    sh -c "${CMD}" > "${DIR_DIR}/bbr-backup.log" 2>&1
+
+    if [ $? -eq 0 ]; then
+        log 'BOSH Director backup completed successfully.'
+    else
+        log 'BOSH Director backup FAILED.'
+    fi
+}
+
 export_om_config() {
     OM_DIR="${SUMMARY_DIR}/om"
     mkdir -p "${OM_DIR}"
 
-    log "Exporting OM staged-config..."
-    if om --target "${OM_TARGET}" --username "${OM_USERNAME}" --password "${OM_PASSWORD}" staged-config --include-credentials > "${OM_DIR}/om-staged-config.json" 2> "${OM_DIR}/om-staged-config.log"; then
-        log "OM staged-config exported."
-        echo "OM staged-config: OK" >> "${SUMMARY_FILE}"
-    else
-        log "OM staged-config export FAILED (see ${OM_DIR}/om-staged-config.log)"
-        echo "OM staged-config: FAILED (See ${OM_DIR}/om-staged-config.log)" >> "${SUMMARY_FILE}"
-        return 1
-    fi
-
     log "Exporting OM installation settings..."
-    if om --target "${OM_TARGET}" --username "${OM_USERNAME}" --password "${OM_PASSWORD}" export-installation > "${OM_DIR}/om-installation-settings.json" 2> "${OM_DIR}/om-installation-settings.log"; then
+    if om --target "${OM_TARGET}" --username "${OM_USERNAME}" --password "${OM_PASSWORD}" export-installation --output-file "${OM_DIR}/om-installation-settings.zip" 2> "${OM_DIR}/om-installation-settings.log"; then
         log "OM installation settings exported."
         echo "OM installation settings: OK" >> "${SUMMARY_FILE}"
     else
@@ -333,8 +381,18 @@ completion() {
 create_dirs
 rotate_old_backups
 detect_tiles
+
+if ! bosh_director_precheck; then
+    log "BOSH director pre-check failed. Consider investigating; continuing with tile backups."
+fi
+
 pre_check
 prompt_continue
+
+if ! bosh_director_backup; then
+    log "BOSH director backup failed (or skipped). Continuing with tile backups."
+fi
+
 
 if ! run_bbr_backup_parallel; then
     log "One or more BBR backups failed. Proceeding to export OM config (but consider investigating failures)."
