@@ -387,20 +387,20 @@ if ! bosh_director_precheck; then
 fi
 
 pre_check
-# prompt_continue
+prompt_continue
 
-# if ! bosh_director_backup; then
-#     log "BOSH director backup failed (or skipped). Continuing with tile backups."
-# fi
+if ! bosh_director_backup; then
+    log "BOSH director backup failed (or skipped). Continuing with tile backups."
+fi
 
 
-# if ! run_bbr_backup_parallel; then
-#     log "One or more BBR backups failed. Proceeding to export OM config (but consider investigating failures)."
-# fi
+if ! run_bbr_backup_parallel; then
+    log "One or more BBR backups failed. Proceeding to export OM config (but consider investigating failures)."
+fi
 
-# if ! export_om_config; then
-#     log "OM export encountered errors. See ${SUMMARY_DIR}/om/*.log"
-# fi
+if ! export_om_config; then
+    log "OM export encountered errors. See ${SUMMARY_DIR}/om/*.log"
+fi
 
 completion
 # explicit cleanup will be handled by trap
